@@ -1,0 +1,1267 @@
+---
+title: "projet"
+author: "Lmezouari Soufiane"
+date: "2025-03-10"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+
+```{r}
+library(MASS)
+library(caret)
+library(e1071)
+library(pracma)   
+library(ggplot2)
+library(reshape2)
+library(FactoMineR)
+library(randomForest)
+library(nnet)       
+library(class)
+library(factoextra)
+library(rpart)
+library(rpart.plot)
+```
+
+## chargement des données 
+```{r}
+agfa=read.table("agfa.txt",header = TRUE)
+fuji=read.table("fuji.txt",header = TRUE)
+kodak=read.table("kodak.txt",header = TRUE)
+inconnu=read.table("inconnu.txt",header = TRUE)
+```
+
+
+
+
+
+```{r}
+
+agfa$class <- "agfa"
+fuji$class <- "fuji"
+kodak$class <- "kodak"
+data <- rbind(agfa, fuji, kodak)
+dim(data) 
+```
+```{r}
+class(data)
+```
+Notre dataset est bien conçu 
+
+
+## 4
+
+```{r}
+sum(is.na(data))
+```
+
+ on a pas des données manquantes
+
+
+### la distribution de variables 
+
+
+```{r}
+dat <- data[, -ncol(data)]
+png("histogramme_variable1.png", width = 800, height = 600)
+hist(dat[,5], main="Distribution de la première variable", xlab="Valeurs", col="skyblue", breaks=30)
+
+shapiro_results <- apply(dat, 2, function(x) shapiro.test(x)$p.value)
+sum(shapiro_results>0.05)
+```
+ Il  n'ya que 5 variables qui sont normales
+
+```{r}
+table(data$class)
+```
+Les classes ne sont pas équilibrées.
+
+Fuji est nettement sous-représentée avec presque moitié moins d’exemples que Kodak.
+
+########## OBJECTIFS ##################
+
+```{r}
+data$class <- as.factor(data$class)
+```
+
+creéation des données de test et données d'entraînement
+```{r}
+set.seed(123)  
+agfa_train <- agfa[1:80, ]
+fuji_train <- fuji[1:45, ]
+kodak_train <- kodak[1:85, ]
+
+agfa_test <- agfa[81:nrow(agfa), ]
+fuji_test <- fuji[46:nrow(fuji), ]
+kodak_test <- kodak[86:nrow(kodak), ]
+
+
+train_data <- rbind(agfa_train, fuji_train, kodak_train)
+test_data <- rbind(agfa_test, fuji_test, kodak_test)
+
+train_data$class <- as.factor(train_data$class)
+test_data$class <- as.factor(test_data$class)
+```
+
+
+
+```{r}
+
+preProc <- preProcess(train_data[, -ncol(train_data)], method = c("center", "scale"))
+
+
+train_data_norm <- predict(preProc, train_data[, -ncol(train_data)])
+test_data_norm <- predict(preProc, test_data[, -ncol(test_data)])
+
+
+train_data_std <- data.frame(train_data_norm, class = train_data$class)
+test_data_std <- data.frame(test_data_norm, class = test_data$class)
+```
+
+##
+
+
+
+```{r}
+# Supprimer la colonne de classe si présente
+agfa_spectra <- agfa[, -ncol(agfa)]
+fuji_spectra <- fuji[, -ncol(fuji)]
+kodak_spectra <- kodak[, -ncol(kodak)]
+
+
+mean_agfa <- colMeans(agfa_spectra)
+mean_fuji <- colMeans(fuji_spectra)
+mean_kodak <- colMeans(kodak_spectra)
+
+
+n <- length(mean_agfa)
+
+
+plot(1:n, mean_agfa, type = "l", col = "red", lwd = 2,
+     xlab = "Longueur d'onde (index)", ylab = "Intensité moyenne",
+     main = "Spectres moyens - Agfa, Fuji, Kodak")
+lines(1:n, mean_fuji, col = "green", lwd = 2)
+lines(1:n, mean_kodak, col = "blue", lwd = 2)
+
+legend("topright", legend = c("Agfa", "Fuji", "Kodak"),
+       col = c("red", "green", "blue"), lwd = 2)
+
+```
+
+
+
+
+
+
+
+
+```{r}
+fisher_score <- function(x, y) {
+  overall_mean <- mean(x)
+  ssb <- sum(table(y) * (tapply(x, y, mean) - overall_mean)^2)
+  sst <- sum((x - overall_mean)^2)
+  return(ssb / sst)
+}
+fisher_scores <- apply(train_data_std[, -ncol(train_data_std)], 2, fisher_score, train_data_std$class)
+
+# les scores de Fisher
+plot(fisher_scores, type = "l", col = "blue", lwd = 2,
+     xlab = "Index des longueurs d'onde", ylab = "Critère de Fisher",
+     main = "Discriminant de Fisher par longueur d'onde")
+
+# 6 pics principaux
+margin <- 50
+scores_to_search <- fisher_scores[(margin + 1):(length(fisher_scores) - margin)]
+peaks <- findpeaks(scores_to_search, npeaks = 6, sortstr = TRUE)
+
+
+selected_vars <- peaks[, 2] + margin
+print(paste("Variables sélectionnées :", paste(selected_vars, collapse = ", ")))
+
+points(selected_vars, fisher_scores[selected_vars], col = "red", pch = 19)
+
+
+train_fisher <- train_data_std[, c(selected_vars, ncol(train_data_std))]
+test_fisher <- test_data_std[, c(selected_vars, ncol(test_data_std))]
+
+
+str(train_fisher)
+
+```
+
+## acp
+```{r}
+
+acp <- PCA(train_data_std[, -ncol(train_data_std)], ncp = 10, graph = FALSE)
+
+test_acp_coord <- predict(acp, newdata = test_data_std[, -ncol(test_data_std)])
+
+train_labels <- train_data_std[, ncol(train_data_std)]
+test_labels <- test_data_std[, ncol(test_data_std)]
+
+train_acp <- data.frame(acp$ind$coord, class = as.factor(train_labels))
+test_acp <- data.frame(test_acp_coord$coord, class = as.factor(test_labels))
+
+levels(train_acp$class)  
+p <- c(agfa = 0.45, fuji = 0.1, kodak = 0.45)
+
+train_acp$class <- factor(train_acp$class, levels = names(p))
+
+```
+
+```{r}
+fviz_pca_ind(acp,
+             geom.ind = "point", 
+             col.ind = train_data_std$class, 
+             palette = "jco",
+             addEllipses = TRUE,   
+             legend.title = "Classe",
+             title = "Projection des individus - ACP")
+
+```
+
+
+## LDA
+```{r}
+
+p <- c(0.45, 0.1, 0.45)
+names(p) <- levels(train_data_std$class)
+et <- proc.time()
+lda_model <- lda(class ~ ., data = train_data_std, prior = p)
+train_time <- proc.time() - et
+
+# Prédiction
+et <- proc.time()
+lda_pred <- predict(lda_model, newdata = test_data_std)$class
+test_time <- proc.time() - et
+
+# Évaluation
+cat("Temps prédiction :", round(test_time[3], 4), "s\n")
+confusionMatrix(lda_pred, test_data_std$class)
+
+```
+
+
+
+```{r}
+error_rate <- 1 - cm$overall["Accuracy"]
+cat("Taux d'erreur :", round(error_rate * 100, 2), "%\n")
+
+cat("Temps d'entraînement :", train_time[3], "secondes\n")
+cat("Temps de prédiction :", test_time[3], "secondes\n")
+```
+
+
+
+### LDA avec fisher
+
+```{r}
+
+et <- proc.time()
+lda_model_ficher <- lda(class ~ ., data = train_fisher, prior = p)
+train_time <- proc.time() - et
+
+et <- proc.time()
+lda_pred_ficher <- predict(lda_model_ficher, newdata = test_fisher)$class
+test_time <- proc.time() - et
+print(test_time)
+
+print(test_time)
+
+conf_matrix_qda <- confusionMatrix(lda_pred_ficher, test_fisher$class)
+print(conf_matrix_qda)
+
+error_lda <- 1 - conf_matrix_qda$overall["Accuracy"]
+cat("Taux d'erreur (lDA avec variables Fisher) :", round(error_lda * 100, 2), "%\n")
+
+```
+
+## lda acp
+```{r}
+
+et <- proc.time()
+lda_model <- lda(class ~ ., data = train_acp, prior = p)
+train_time <- proc.time() - et
+
+
+et <- proc.time()
+lda_pred <- predict(lda_model, newdata = test_acp)$class
+test_time <- proc.time() - et
+print(test_time)
+
+# Évaluation
+conf_matrix_lda <- confusionMatrix(lda_pred, test_acp$class)
+print(conf_matrix_lda)
+
+# Taux d'erreur
+error_lda <- 1 - conf_matrix_lda$overall["Accuracy"]
+cat("Taux d'erreur (LDA avec ACP) :", round(error_lda * 100, 2), "%\n")
+cat("Temps entraînement :", round(train_time[3], 2), "sec\n")
+cat("Temps prédiction :", round(test_time[3], 2), "sec\n")
+
+```
+
+# QDA
+
+
+```{r}
+
+et <- proc.time()
+qda_model <- qda(class ~ ., data = train_data_std, prior=p)
+train_time <- proc.time() - et
+
+# Prédiction
+et <- proc.time()
+qda_pred <- predict(qda_model, newdata = test_data_std)$class
+test_time <- proc.time() - et
+print(test_time)
+
+# Évaluation
+confusionMatrix(qda_pred, test_data_std$class)
+```
+
+## qda Acp
+
+```{r}
+
+et <- proc.time()
+qda_model <- qda(class ~ ., data = train_acp, prior = p)
+train_time <- proc.time() - et
+
+et <- proc.time()
+qda_pred <- predict(qda_model, newdata = test_acp)$class
+test_time <- proc.time() - et
+print(test_time)
+
+
+confusionMatrix(qda_pred, test_acp$class)
+
+```
+
+
+## QDA ficher
+
+```{r}
+
+et <- proc.time()
+qda_model <- qda(class ~ ., data = train_fisher, prior = p)
+train_time <- proc.time() - et
+
+et <- proc.time()
+qda_pred <- predict(qda_model, newdata = test_fisher)$class
+test_time <- proc.time() - et
+print(test_time)
+
+print(test_time)
+
+conf_matrix_qda <- confusionMatrix(qda_pred, test_fisher$class)
+print(conf_matrix_qda)
+
+error_qda <- 1 - conf_matrix_qda$overall["Accuracy"]
+cat("Taux d'erreur (QDA avec variables Fisher) :", round(error_qda * 100, 2), "%\n")
+
+```
+
+
+
+
+
+
+## KNN
+
+
+```{r}
+
+# Validation croisée pour sélectionner k optimal
+set.seed(123)
+ctrl <- trainControl(method = "cv", number = 10)
+et <- proc.time()
+
+knn_model <- train(
+  class ~ .,
+  data = train_data_std,
+  method = "knn",
+  trControl = ctrl,
+  tuneGrid = expand.grid(k = 1:10),
+  preProcess = c("center", "scale")
+)
+
+
+
+# meilleur k
+print(knn_model)
+best_k <- knn_model$bestTune$k
+cat("Meilleur k :", best_k, "\n")
+et <- proc.time()
+
+#  Prédiction 
+pred_knn <- predict(knn_model, newdata = test_data_std)
+test_time <- proc.time() - et
+print(test_time)
+#  Évaluation
+cm_knn <- confusionMatrix(pred_knn, test_data_std$class)
+print(cm_knn)
+
+# Courbe de la precision selon k
+png("KNN.png", width = 800, height = 600)
+plot(knn_model, main = "precision en fonction de k (K-NN)")
+
+```
+
+
+
+### KNN fisher
+
+
+
+```{r}
+
+train_x_fisher <- train_fisher[, -ncol(train_fisher)]  
+test_x_fisher <- test_fisher[, -ncol(test_fisher)]
+train_y_fisher <- train_fisher$class  
+et <- proc.time()
+
+pred_knn_fisher <- knn(
+  train = train_x_fisher,
+  test = test_x_fisher,
+  cl = train_y_fisher,
+  k = 3
+)
+test_time <- proc.time() - et
+print(test_time)
+
+
+pred_knn_fisher <- factor(pred_knn_fisher, levels = levels(train_y_fisher))
+conf_matrix_fisher <- confusionMatrix(pred_knn_fisher, test_fisher$class)
+error_fisher <- 1 - conf_matrix_fisher$overall["Accuracy"]
+cat("Taux d'erreur (K-NN avec variables sélectionnées par Fisher) :", round(error_fisher * 100, 2), "%\n")
+print(conf_matrix_fisher)
+```
+
+
+
+
+
+## KNN ACP
+
+```{r}
+
+X_train <- train_acp[, -ncol(train_acp)]  
+y_train <- train_acp$class                
+
+X_test <- test_acp[, -ncol(test_acp)]
+y_test <- test_acp$class
+
+k <- 3
+
+
+et <- proc.time()
+knn_pred <- knn(train = X_train, test = X_test, cl = y_train, k = k)
+test_time <- proc.time() - et
+print(test_time)
+
+#  Évaluation
+conf_matrix_knn <- confusionMatrix(knn_pred, y_test)
+print(conf_matrix_knn)
+
+#  Taux d'erreur
+error_knn <- 1 - conf_matrix_knn$overall["Accuracy"]
+cat("Taux d'erreur (k-NN avec ACP, k =", k, ") :", round(error_knn * 100, 2), "%\n")
+cat("Temps prédiction :", round(test_time[3], 2), "sec\n")
+
+```
+
+
+
+### Méthode CART ###
+### 1. Arbre CART par défaut ###
+
+
+```{r}
+cart_defaut <- rpart(class ~ ., data = train_data_std, method = "class")
+# Visualisation
+rpart.plot(cart_defaut, main = "Arbre CART - Par défaut")
+et <- proc.time()
+# Prédictions
+pred_cart_defaut <- predict(cart_defaut, test_data_std, type = "class")
+test_time <- proc.time() - et
+print(test_time)
+# Évaluation
+conf_matrix_cart_defaut <- confusionMatrix(pred_cart_defaut, test_data_std$class)
+cat("Taux d'erreur (CART - Par défaut):",
+    1 - conf_matrix_cart_defaut$overall["Accuracy"], "\n")
+```
+
+ Taux d'erreur (CART - Par défaut): 0.245098
+ 
+
+
+
+### 2. Arbre CART maximal ###
+
+```{r}
+# Définition des paramètres pour obtenir un arbre maximal 
+param <- rpart.control(minbucket = 1, minsplit = 2, cp = 0)
+et <- proc.time()
+# Apprentissage de l’arbre maximal
+cart_max <- rpart(class ~ ., data = train_data_std, method = "class", control = param)
+test_time <- proc.time() - et
+print(test_time)
+# Visualisation de l’arbre maximal
+rpart.plot(cart_max, main = "Arbre CART - Maximal")
+```
+
+
+
+# Affichage du tableau de complexité
+```{r}
+cp_table <- printcp(cart_max)
+```
+
+### Les arbres maximal et élagué selon le cp optimal (xerror) vont etre les memes parceque
+#le paramètre de complexité (cp) minimisant l'erreur de validation croisée est égal à zéro, ce qui signifie qu'aucun élagage ne sera effectué; l'arbre
+#retenu sera donc le même que l’arbre maximal.
+
+### 3. Élagage par validation croisée (cp minimal - xerror) ###
+
+
+```{r}
+# cp qui minimise l'erreur de validation croisée
+cp_xerror <- cp_table[which.min(cp_table[, "xerror"]), "CP"]
+
+# Arbre élagué avec cp optimal
+et <- proc.time()
+cart_xerror <- prune(cart_max, cp = cp_xerror)
+test_time <- proc.time() - et
+print(test_time)
+rpart.plot(cart_xerror, main = "Arbre élagué - cp optimal (xerror)")
+
+### 4. Élagage par la règle du 1-SE ###
+
+
+min_error <- min(cp_table[, "xerror"])
+se <- cp_table[, "xstd"][which.min(cp_table[, "xerror"])]
+
+
+n_se <- which(cp_table[, "xerror"] - cp_table[, "xstd"] <= min_error)[1]
+cp_SE <- cp_table[n_se, "CP"]
+
+# Arbre élagué selon 1-SE
+et <- proc.time()
+cart_SE <- prune(cart_max, cp = cp_SE)
+test_time <- proc.time() - et
+print(test_time)
+rpart.plot(cart_SE, main = "Arbre élagué - Règle du 1-SE")
+
+```
+
+
+
+Pour appliquer la methode aux données reduites ,On a choisi d'utiliser l'arbre élagué selon la règle du 1-SE car
+
+cette méthode permet de sélectionner un modèle plus simple et plus robuste, tout en conservant une performance proche de l'optimum.
+
+Cela évite le surapprentissage et favorise une meilleure généralisation sur de nouvelles données.
+
+
+
+```{r}
+
+train_fisher$class <- as.factor(train_fisher$class)
+test_fisher$class <- as.factor(test_fisher$class)   
+et <- proc.time()
+cart_fisher <- rpart(class ~ ., data = train_fisher, method = "class", control = rpart.control(cp = cp_SE))
+test_time <- proc.time() - et
+print(test_time)
+pred_cart_fisher <- predict(cart_fisher, test_fisher, type = "class")
+
+
+common_levels <- union(levels(pred_cart_fisher), levels(test_fisher$class))
+pred_cart_fisher <- factor(pred_cart_fisher, levels = common_levels)
+true_class_fisher <- factor(test_fisher$class, levels = common_levels)
+
+if (any(levels(pred_cart_fisher) %in% levels(true_class_fisher))) {
+  conf_matrix_cart_fisher <- confusionMatrix(pred_cart_fisher, true_class_fisher)
+  cat("Taux d'erreur (CART - Fisher):", 1 - conf_matrix_cart_fisher$overall["Accuracy"], "\n")
+} else {
+  cat("Erreur : aucune classe prédite ne correspond aux classes de référence.\n")
+}
+```
+
+
+
+
+## Le Taux d'erreur (CART - Fisher): 0.3823529
+
+```{r}
+
+
+### CART sur données réduites par ACP ###
+
+# Forcer les colonnes à être des facteurs
+train_acp$class <- as.factor(train_acp$class)
+test_acp$class <- as.factor(test_acp$class)
+
+# Entraînement du modèle CART
+et <- proc.time()
+cart_acp <- rpart(class ~ ., data = train_acp, method = "class", control = rpart.control(cp = cp_SE))
+test_time <- proc.time() - et
+print(test_time)
+
+# Prédictions
+pred_cart_acp <- predict(cart_acp, test_acp, type = "class")
+
+
+common_levels <- union(levels(pred_cart_acp), levels(test_acp$class))
+pred_cart_acp <- factor(pred_cart_acp, levels = common_levels)
+true_class_acp <- factor(test_acp$class, levels = common_levels)
+
+# Évaluation
+conf_matrix_cart_acp <- confusionMatrix(pred_cart_acp, true_class_acp)
+taux_erreur_acp <- 1 - conf_matrix_cart_acp$overall["Accuracy"]
+cat("Taux d'erreur (CART - ACP):", taux_erreur_acp, "\n")
+
+```
+
+
+## Le Taux d'erreur (CART - ACP): 0.2745098
+
+
+
+
+
+```{r}
+# CART Maximal
+pred_cart_max <- predict(cart_max, test_data_std, type = "class")
+conf_matrix_cart_max <- confusionMatrix(pred_cart_max, test_data_std$class)
+err_max <- 1 - conf_matrix_cart_max$overall["Accuracy"]
+
+# CART - cp optimal (xerror)
+pred_cart_xerror <- predict(cart_xerror, test_data_std, type = "class")
+conf_matrix_cart_xerror <- confusionMatrix(pred_cart_xerror, test_data_std$class)
+err_xerror <- 1 - conf_matrix_cart_xerror$overall["Accuracy"]
+
+# CART - 1SE
+pred_cart_SE <- predict(cart_SE, test_data_std, type = "class")
+conf_matrix_cart_SE <- confusionMatrix(pred_cart_SE, test_data_std$class)
+err_SE <- 1 - conf_matrix_cart_SE$overall["Accuracy"]
+
+```
+
+```{r}
+results_cart <- data.frame(
+  Méthode = c("CART - Défaut", "CART - Maximal", "CART - xerror",
+              "CART - 1SE", "CART - Fisher", "CART - ACP"),
+  Taux_Erreur = c(
+    1 - conf_matrix_cart_defaut$overall["Accuracy"],
+    err_max,
+    err_xerror,
+    err_SE,
+    1 - conf_matrix_cart_fisher$overall["Accuracy"],
+    1 - conf_matrix_cart_acp$overall["Accuracy"]
+  )
+)
+
+
+
+## Pour visualiser au mieux les meilleurs resultats
+ggplot(results_cart, aes(x = Méthode, y = Taux_Erreur, fill = Méthode)) +
+  geom_bar(stat = "identity") +
+  labs(title = "Comparaison des taux d'erreur (CART)",
+       x = "", y = "Taux d'erreur") +
+  theme_minimal() +
+  theme(legend.position = "none") +
+  geom_text(aes(label = round(Taux_Erreur, 3)), vjust = -0.5)
+
+```
+
+
+
+## SVM
+
+```{r}
+options(warn = -1)
+```
+
+
+```{r}
+# SVM COMPLET
+et <- proc.time()
+svm_full <- svm(class ~ ., data = train_data_std, kernel = "linear", probability = TRUE)
+train_time_full <- proc.time() - et
+
+et <- proc.time()
+pred_svm_full <- predict(svm_full, newdata = test_data_std)
+test_time_full <- proc.time() - et
+print(test_time_full)
+cm_full <- confusionMatrix(pred_svm_full, test_data_std$class)
+error_full <- 1 - cm_full$overall["Accuracy"]
+
+cat("SVM COMPLET\n")
+cat("Taux d'erreur :", round(error_full * 100, 2), "%\n")
+cat("Temps entraînement :", round(train_time_full[3], 4), "s | Prédiction :", round(test_time_full[3], 4), "s\n\n")
+
+```
+
+```{r}
+# SVM FISHER
+et <- proc.time()
+svm_fisher <- svm(class ~ ., data = train_fisher, kernel = "linear", probability = TRUE)
+train_time_fisher <- proc.time() - et
+
+et <- proc.time()
+pred_svm_fisher <- predict(svm_fisher, newdata = test_fisher)
+test_time_fisher <- proc.time() - et
+
+cm_fisher <- confusionMatrix(pred_svm_fisher, test_fisher$class)
+error_fisher <- 1 - cm_fisher$overall["Accuracy"]
+
+cat("SVM FISHER\n")
+cat("Taux d'erreur :", round(error_fisher * 100, 2), "%\n")
+cat("Temps entraînement :", round(train_time_fisher[3], 4), "s | Prédiction :", round(test_time_fisher[3], 4), "s\n\n")
+
+```
+
+
+```{r}
+
+pca_proc <- preProcess(train_data_std[, -ncol(train_data_std)], method = c("center", "scale", "pca"), pcaComp = 10)
+train_pca <- predict(pca_proc, train_data_std[, -ncol(train_data_std)])
+test_pca <- predict(pca_proc, test_data_std[, -ncol(test_data_std)])
+train_pca$class <- train_data_std$class
+test_pca$class <- test_data_std$class
+# SVM PCA
+et <- proc.time()
+svm_pca <- svm(class ~ ., data = train_pca, kernel = "linear", probability = TRUE)
+train_time_pca <- proc.time() - et
+
+et <- proc.time()
+pred_svm_pca <- predict(svm_pca, newdata = test_pca)
+test_time_pca <- proc.time() - et
+
+cm_pca <- confusionMatrix(pred_svm_pca, test_pca$class)
+error_pca <- 1 - cm_pca$overall["Accuracy"]
+
+cat("SVM PCA\n")
+cat("Taux d'erreur :", round(error_pca * 100, 2), "%\n")
+cat("Temps entraînement :", round(train_time_pca[3], 4), "s | Prédiction :", round(test_time_pca[3], 4), "s\n\n")
+```
+
+
+```{r}
+
+cat("\n MATRICE DE CONFUSION — SVM COMPLET\n")
+print(cm_full$table)
+cat("\nAccuracy :", round(cm_full$overall["Accuracy"] * 100, 2), "%\n")
+
+cat("\nMATRICE DE CONFUSION — SVM FISHER\n")
+print(cm_fisher$table)
+cat("\nAccuracy :", round(cm_fisher$overall["Accuracy"] * 100, 2), "%\n")
+
+cat("\n MATRICE DE CONFUSION — SVM PCA\n")
+print(cm_pca$table)
+cat("\nAccuracy :", round(cm_pca$overall["Accuracy"] * 100, 2), "%\n")
+
+```
+
+
+```{r}
+svm_summary <- data.frame(
+  Méthode = c("Complète", "Fisher", "ACP"),
+  Accuracy = round(c(cm_full$overall["Accuracy"], cm_fisher$overall["Accuracy"], cm_pca$overall["Accuracy"]) * 100, 2),
+  Erreur = round(c(error_full, error_fisher, error_pca) * 100, 2),
+  `Temps entraînement (s)` = round(c(train_time_full[3], train_time_fisher[3], train_time_pca[3]), 2),
+  `Temps prédiction (s)` = round(c(test_time_full[3], test_time_fisher[3], test_time_pca[3]), 2)
+)
+
+cat("\n Résumé des SVM (Complet vs Fisher vs PCA) :\n")
+print(svm_summary)
+
+```
+
+
+
+
+
+## regression logistique binaire 
+
+#### step avec AIC ( il prend beaucoupde temps environ 15 min ou plus vec wearings  )
+```{r}
+# Variables
+classes <- levels(train_data_std$class)
+X_train <- train_data_std[, -ncol(train_data_std)]
+X_test <- test_data_std[, -ncol(test_data_std)]
+y_train <- train_data_std$class
+y_test <- test_data_std$class
+
+
+  models <- list()
+probs_test <- matrix(0, nrow = nrow(X_test), ncol = length(classes))
+colnames(probs_test) <- classes
+
+for (k in classes) {
+
+  y_bin <- ifelse(y_train == k, 1, 0)
+  
+
+  df_k <- data.frame(X_train, y_bin = factor(y_bin))
+
+
+  model_null <- glm(y_bin ~ 1, data = df_k, family = binomial)
+  model_full <- glm(y_bin ~ ., data = df_k, family = binomial)
+
+  # Sélection par stepAIC
+  model_k <- stepAIC(model_null, scope = list(lower = model_null, upper = model_full),
+                     direction = "both", trace = FALSE)
+  
+  models[[k]] <- model_k
+
+
+  probs_test[, k] <- predict(model_k, newdata = X_test, type = "response")
+}
+
+```
+
+
+
+
+
+
+
+```{r}
+pred_class <- apply(probs_test, 1, function(p) classes[which.max(p)])
+
+# Évaluation
+confusionMatrix(factor(pred_class, levels = classes), y_test)
+
+```
+
+
+```{r}
+classes <- levels(train_fisher$class)
+X_train <- train_fisher[, -ncol(train_fisher)]
+X_test <- test_fisher[, -ncol(test_fisher)]
+y_train <- train_fisher$class
+y_test <- test_fisher$class
+
+
+models_fisher <- list()
+probs_fisher <- matrix(0, nrow = nrow(X_test), ncol = length(classes))
+colnames(probs_fisher) <- classes
+
+
+et <- proc.time()
+
+for (k in classes) {
+  y_bin <- ifelse(y_train == k, 1, 0)
+  df_k <- data.frame(X_train, y_bin = factor(y_bin))
+  
+  model_null <- glm(y_bin ~ 1, data = df_k, family = binomial, control = glm.control(maxit = 100))
+  model_full <- glm(y_bin ~ ., data = df_k, family = binomial, control = glm.control(maxit = 100))
+  
+  model_k <- stepAIC(model_null, scope = list(lower = model_null, upper = model_full),
+                     direction = "both", trace = FALSE)
+  
+  models_fisher[[k]] <- model_k
+  probs_fisher[, k] <- predict(model_k, newdata = X_test, type = "response")
+}
+
+train_time_fisher <- proc.time() - et
+
+pred_fisher <- apply(probs_fisher, 1, function(p) classes[which.max(p)])
+conf_fisher <- confusionMatrix(factor(pred_fisher, levels = classes), y_test)
+
+cat(" Régression Logistique (Fisher)\n")
+print(conf_fisher)
+cat(" Temps total :", round(train_time_fisher[3], 4), "secondes\n\n")
+
+```
+
+
+```{r}
+classes <- levels(train_acp$class)
+X_train <- train_acp[, -ncol(train_acp)]
+X_test <- test_acp[, -ncol(test_acp)]
+y_train <- train_acp$class
+y_test <- test_acp$class
+
+
+models_acp <- list()
+probs_acp <- matrix(0, nrow = nrow(X_test), ncol = length(classes))
+colnames(probs_acp) <- classes
+
+
+et <- proc.time()
+
+for (k in classes) {
+  y_bin <- ifelse(y_train == k, 1, 0)
+  df_k <- data.frame(X_train, y_bin = factor(y_bin))
+  
+  model_null <- glm(y_bin ~ 1, data = df_k, family = binomial, control = glm.control(maxit = 100))
+  model_full <- glm(y_bin ~ ., data = df_k, family = binomial, control = glm.control(maxit = 100))
+  
+  model_k <- stepAIC(model_null, scope = list(lower = model_null, upper = model_full),
+                     direction = "both", trace = FALSE)
+  
+  models_acp[[k]] <- model_k
+  probs_acp[, k] <- predict(model_k, newdata = X_test, type = "response")
+}
+
+train_time_acp <- proc.time() - et
+
+# Prédiction finale
+pred_acp <- apply(probs_acp, 1, function(p) classes[which.max(p)])
+conf_acp <- confusionMatrix(factor(pred_acp, levels = classes), y_test)
+
+cat(" Régression Logistique (ACP)\n")
+print(conf_acp)
+cat(" Temps total :", round(train_time_acp[3], 4), "secondes\n\n")
+
+```
+
+```{r}
+conf_full<-confusionMatrix(factor(pred_class, levels = classes), y_test)
+
+```
+
+
+```{r}
+# Exemple pour Fisher :
+acc_fisher <- conf_fisher$overall["Accuracy"]
+error_fisher <- 1 - acc_fisher
+time_fisher <- train_time_fisher[3]
+# Pour ACP
+acc_acp <- conf_acp$overall["Accuracy"]
+error_acp <- 1 - acc_acp
+time_acp <- train_time_acp[3]
+
+
+acc_full <- conf_full$overall["Accuracy"]
+error_full <- 1 - acc_full
+time_full <- train_time_full[3]
+
+```
+
+
+
+
+```{r}
+
+resultats_logistique <- data.frame(
+  Méthode = c("Complète", "Fisher", "ACP"),
+  `Accuracy (%)` = round(c(acc_full, acc_fisher, acc_acp) * 100, 2),
+  `Erreur (%)` = round(c(error_full, error_fisher, error_acp) * 100, 2),
+  `Temps entraînement (s)` = round(c(time_full, time_fisher, time_acp), 2)
+)
+
+print(resultats_logistique)
+
+```
+
+
+```{r}
+
+df <- data.frame(
+  Méthode = c("Complète", "Fisher", "ACP"),
+  Erreur = c(13.73, 34.31, 15.69)
+)
+
+ggplot(df, aes(x = Méthode, y = Erreur, fill = Méthode)) +
+  geom_bar(stat = "identity", width = 0.6) +
+  scale_fill_manual(values = c("steelblue", "darkorange", "seagreen")) +
+  geom_text(aes(label = paste0(Erreur, "%")), vjust = -0.5) +
+  labs(title = "Taux d'erreur - Régression logistique (un-contre-tous)",
+       y = "Erreur (%)", x = "Méthode") +
+  theme_minimal()
+
+```
+
+
+
+
+
+
+
+## regressin multinominale 
+
+```{r}
+et <- proc.time()
+model_multi_full <- multinom(class ~ ., data = train_data_std, MaxNWts = 10000)
+train_time_full <- proc.time() - et
+
+et <- proc.time()
+pred_multi_full <- predict(model_multi_full, newdata = test_data_std)
+test_time_full <- proc.time() - et
+
+cm_full <- confusionMatrix(pred_multi_full, test_data_std$class)
+acc_full <- cm_full$overall["Accuracy"]
+err_full <- 1 - acc_full
+
+cat(" Multinom (Complète)\n")
+print(cm_full)
+cat(" Entraînement :", round(train_time_full[3], 4), "s | Prédiction :", round(test_time_full[3], 4), "s\n\n")
+
+
+```
+
+
+
+
+```{r}
+et <- proc.time()
+model_multi_fisher <- multinom(class ~ ., data = train_fisher, MaxNWts = 10000)
+train_time_fisher <- proc.time() - et
+
+et <- proc.time()
+pred_multi_fisher <- predict(model_multi_fisher, newdata = test_fisher)
+test_time_fisher <- proc.time() - et
+
+cm_fisher <- confusionMatrix(pred_multi_fisher, test_fisher$class)
+acc_fisher <- cm_fisher$overall["Accuracy"]
+err_fisher <- 1 - acc_fisher
+
+cat(" Multinom (Fisher)\n")
+print(cm_fisher)
+cat(" Entraînement :", round(train_time_fisher[3], 4), "s | Prédiction :", round(test_time_fisher[3], 4), "s\n\n")
+
+```
+
+
+```{r}
+et <- proc.time()
+model_multi_acp <- multinom(class ~ ., data = train_acp, MaxNWts = 10000)
+train_time_acp <- proc.time() - et
+
+et <- proc.time()
+pred_multi_acp <- predict(model_multi_acp, newdata = test_acp)
+test_time_acp <- proc.time() - et
+
+cm_acp <- confusionMatrix(pred_multi_acp, test_acp$class)
+acc_acp <- cm_acp$overall["Accuracy"]
+err_acp <- 1 - acc_acp
+
+cat(" Multinom (ACP)\n")
+print(cm_acp)
+cat(" Entraînement :", round(train_time_acp[3], 4), "s | Prédiction :", round(test_time_acp[3], 4), "s\n\n")
+
+```
+
+
+
+
+```{r}
+multinom_summary <- data.frame(
+  Méthode = c("Complète", "Fisher", "ACP"),
+  `Accuracy (%)` = round(c(acc_full, acc_fisher, acc_acp) * 100, 2),
+  `Erreur (%)` = round(c(err_full, err_fisher, err_acp) * 100, 2),
+  `Temps entraînement (s)` = round(c(train_time_full[3], train_time_fisher[3], train_time_acp[3]), 2),
+  `Temps prédiction (s)` = round(c(test_time_full[3], test_time_fisher[3], test_time_acp[3]), 2)
+)
+print(multinom_summary)
+
+```
+
+
+##Random Forests 
+
+
+
+```{r}
+
+rf_full <- randomForest(class ~ ., data = train_data_std, 
+                        importance = TRUE, proximity = FALSE, ntree = 500)
+
+varImpPlot(rf_full, sort = TRUE, n.var = 10, 
+           main = "Top 10 variables importantes (RF)")
+
+```
+
+
+
+
+
+```{r}
+
+imp_rf <- importance(rf_full, type = 2)
+imp_rf <- data.frame(Variable = rownames(imp_rf), Importance = imp_rf[, 1])
+top_vars <- imp_rf[order(imp_rf$Importance, decreasing = TRUE), "Variable"][1:20]
+
+```
+
+
+
+```{r}
+train_rf_reduced <- train_data_std[, c(top_vars, "class")]
+test_rf_reduced <- test_data_std[, c(top_vars, "class")]
+
+```
+
+
+```{r}
+et <- proc.time()
+rf_reduced <- randomForest(class ~ ., data = train_rf_reduced, ntree = 500)
+train_time_rf <- proc.time() - et
+
+et <- proc.time()
+pred_rf <- predict(rf_reduced, newdata = test_rf_reduced)
+test_time_rf <- proc.time() - et
+
+cm_rf <- confusionMatrix(pred_rf, test_rf_reduced$class)
+acc_rf <- cm_rf$overall["Accuracy"]
+err_rf <- 1 - acc_rf
+
+# Résultats
+cat(" Random Forest (top variables)\n")
+print(cm_rf)
+cat(" Accuracy :", round(acc_rf * 100, 2), "%\n")
+cat(" Erreur   :", round(err_rf * 100, 2), "%\n")
+cat(" Entraînement :", round(train_time_rf[3], 4), "s | Prédiction :", round(test_time_rf[3], 4), "s\n")
+
+```
+
+
+
+
+
+
+```{r}
+et <- proc.time()
+rf_fisher <- randomForest(class ~ ., data = train_fisher, 
+                          importance = TRUE, proximity = FALSE, ntree = 500)
+train_time_fisher_rf <- proc.time() - et
+
+
+imp <- importance(rf_fisher, type = 2)
+imp_df <- data.frame(Variable = rownames(imp), Importance = imp[, "MeanDecreaseGini"])
+
+
+imp_df <- imp_df[is.finite(imp_df$Importance), ]
+
+
+if (nrow(imp_df) >= 1) {
+  top_imp <- head(imp_df[order(imp_df$Importance, decreasing = TRUE), ], 10)
+  barplot(
+    top_imp$Importance,
+    names.arg = top_imp$Variable,
+    las = 2,
+    col = "blue",
+    main = "Top variables importantes (RF - Fisher)",
+    ylab = "MeanDecreaseGini"
+  )
+} else {
+  cat(" Aucune variable importante détectée (valeurs NA ou nulles).\n")
+}
+
+top_vars <- head(imp_df[order(imp_df$Importance, decreasing = TRUE), "Variable"], 5)
+cat(" Variables sélectionnées :", paste(top_vars, collapse = ", "), "\n")
+
+train_fisher_top <- train_fisher[, c(top_vars, "class")]
+test_fisher_top <- test_fisher[, c(top_vars, "class")]
+
+et <- proc.time()
+rf_fisher_top <- randomForest(class ~ ., data = train_fisher_top, ntree = 500)
+train_time_rf_top <- proc.time() - et
+
+et <- proc.time()
+pred_rf_top <- predict(rf_fisher_top, newdata = test_fisher_top)
+test_time_rf_top <- proc.time() - et
+
+cm_top <- confusionMatrix(pred_rf_top, test_fisher_top$class)
+acc_top <- cm_top$overall["Accuracy"]
+err_top <- 1 - acc_top
+
+
+cat("\n Random Forest (Top variables - Fisher)\n")
+print(cm_top)
+cat(" Accuracy :", round(acc_top * 100, 2), "%\n")
+cat(" Erreur   :", round(err_top * 100, 2), "%\n")
+cat(" Entraînement :", round(train_time_rf_top[3], 4), "s | Prédiction :", round(test_time_rf_top[3], 4), "s\n")
+
+
+```
+
+
+
+
+```{r}
+
+et <- proc.time()
+rf_acp <- randomForest(class ~ ., data = train_acp, 
+                       importance = TRUE, proximity = FALSE, ntree = 500)
+train_time_acp_rf <- proc.time() - et
+
+et <- proc.time()
+pred_rf_acp <- predict(rf_acp, newdata = test_acp)
+test_time_acp_rf <- proc.time() - et
+
+cm_acp_rf <- confusionMatrix(pred_rf_acp, test_acp$class)
+acc_acp_rf <- cm_acp_rf$overall["Accuracy"]
+err_acp_rf <- 1 - acc_acp_rf
+
+
+varImpPlot(rf_acp, sort = TRUE, n.var = 10, main = "Top composantes (RF - ACP)")
+
+cat("Random Forest (ACP)\n")
+print(cm_acp_rf)
+cat(" Accuracy :", round(acc_acp_rf * 100, 2), "%\n")
+cat("Erreur   :", round(err_acp_rf * 100, 2), "%\n")
+cat(" Entraînement :", round(train_time_acp_rf[3], 4), "s | Prédiction :", round(test_time_acp_rf[3], 4), "s\n\n")
+
+```
+
+
+
+
+```{r}
+rf_summary <- data.frame(
+  Modèle = c("Top variables", "Fisher", "ACP"),
+  `Accuracy (%)` = round(c(acc_rf, acc_top, acc_acp_rf) * 100, 2),
+  `Erreur (%)` = round(c(err_rf, err_top, err_acp_rf) * 100, 2),
+  `Temps entraînement (s)` = round(c(train_time_rf[3], train_time_rf_top[3], train_time_acp_rf[3]), 2),
+  `Temps prédiction (s)` = round(c(test_time_rf[3], test_time_rf_top[3], test_time_acp_rf[3]), 2)
+)
+
+cat("\n Résumé comparatif — Random Forest (3 variantes) :\n")
+print(rf_summary)
+
+
+```
+
+
+
+
+## APPLICATION 
+
+## svm acp
+
+```{r}
+inconnu_std <- predict(preProc, inconnu)
+inconnu_pca <- predict(pca_proc, inconnu_std)
+
+pred_inconnu <- predict(svm_pca, newdata = inconnu_pca)
+
+# Résultat
+cat(" Prédictions SVM (ACP) pour les données inconnues :\n")
+print(pred_inconnu)
+
+
+```
+
+
+## Régression Logistique Multinomiale
+```{r}
+
+
+inconnu_std <- predict(preProc, inconnu)
+pred_multi_full <- predict(model_multi_full, newdata = inconnu_std)
+
+
+cat(" Prédictions Régression Logistique Multinomiale (complète) :\n")
+print(pred_multi_full)
+
+```
+
